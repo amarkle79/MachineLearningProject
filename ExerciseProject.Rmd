@@ -1,0 +1,90 @@
+---
+title: "Exercise Prediction Project"
+output: html_document
+---
+## Project Outline
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. This project utilizes data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants, worn while performing unilateral dumbbell biceps curls, to predict whether they performed the movement correctly or incorrectly. Participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways: (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)[^1].
+
+## Model Training and Cross-Validated Accuracy
+
+I selected three model types for this analysis: Linear Discriminate Analysis (LDA), Random Forests (RF), and Support Vector Machines. These models were chosen for the diversity of their approaches. Our final prediction will result from an ensemble of the three, which will benefit from the (presumably) low correlation of the models with each other. For each model I include all available predictor variables. I train each model using 4-fold cross-validation, selecting the parameters that result in the highest cross-validated accuracy.
+
+```{r setup, echo=FALSE, include=FALSE}
+library(knitr)
+library(caret)
+library(caretEnsemble)
+library(e1071)
+library(randomForest)
+library(MASS)
+library(ggplot2)
+library(doMC)
+registerDoMC(cores = 4)
+
+knitr::opts_chunk$set(echo = TRUE)
+training <- read.csv("pml-training.csv", header = TRUE, stringsAsFactors = FALSE)
+training$classe <- factor(training$classe)
+
+testing <- read.csv("pml-testing.csv", header = TRUE, stringsAsFactors = FALSE)
+set.seed(5879)
+```
+
+```{r fitmodels, cache=TRUE, echo=TRUE, results='hide', warning=FALSE, message=FALSE}
+control <- trainControl(savePredictions=TRUE, classProbs=TRUE, method = 'cv', number=4)
+algorithmList <- c('lda', 'rf', 'svmRadial')
+models <- caretList(classe ~ ., data = training, trControl=control, methodList=algorithmList)
+```
+
+After training the models I compare each model's cross-validated accuracy, shown in the table below.
+
+| Model | Accuracy |
+---     | ---      |
+LDA     | `r models$lda$results$Accuracy` |
+RF      | `r max(models$rf$results$Accuracy)` |
+SVM     | `r max(models$svm$results$Accuracy)` |
+
+The Random Forest performs extremely well, and outperforms the other two models in cross-validated accuracy. The Support Vector Machine has the second highest cross-validated accuracy, followed by Linear Discriminat Analysis which performs rather poorly.
+
+## Model Comparison
+
+```{r evaluate, cache=TRUE, echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+vimp_lda <- names(sort(apply(varImp(models$lda)$importance, 1, mean), decreasing=TRUE))[1:5]
+vimp_rf <- names(sort(apply(varImp(models$rf)$importance, 1, mean), decreasing=TRUE))[1:5]
+vimp_svm <- names(sort(apply(varImp(models$svmRadial)$importance, 1, mean), decreasing=TRUE))[1:5]
+```
+
+I next examine the similarity between the models. First I consider how variable importance differs across the models. For each model, the top five predictors in terms of variable importance are shown in the table below. Interestingly, dispite their difference in approaches, the LDA and SVM models produce identical rankings for the top five variables in terms of performance. Those in the top five for the RF model are distict, but include some overlap.
+
+|       |   LDA                 |   RF                  |   SVM            |
+---     |   --------------------|--------------------|--------------------|
+1st     |   `r vimp_lda[1]`     |   `r vimp_rf[1]`      |   `r vimp_svm[1]` |
+2nd     |   `r vimp_lda[2]`     |   `r vimp_rf[2]`      |   `r vimp_svm[2]` |
+3rd     |   `r vimp_lda[3]`     |   `r vimp_rf[3]`      |   `r vimp_svm[3]` |
+4th     |   `r vimp_lda[4]`     |   `r vimp_rf[4]`      |   `r vimp_svm[4]` |
+5th     |   `r vimp_lda[5]`     |   `r vimp_rf[5]`      |   `r vimp_svm[5]` |
+
+Next I examine the degree to which the predictions from the three models overlap. The table below shows the percentage agreement between the predictions of the three models on the testing data set.
+
+```{r predict, echo=FALSE, results='asis', warning=FALSE, message=FALSE}
+predict_lda = predict(models$lda, testing)
+predict_rf = predict(models$rf, testing)
+predict_svm = predict(models$svmRadial, testing)
+
+predict_matrix <- matrix(c(1," "," ",mean(predict_lda==predict_rf),1," ",mean(predict_lda==predict_svm),mean(predict_rf==predict_svm),1), nrow = 3, byrow=TRUE)
+
+colnames(predict_matrix) <- c("LDA", "RF", "svm")
+rownames(predict_matrix) <- c("LDA", "RF", "svm")
+
+kable(predict_matrix)
+
+#fit_svm <- train(classe ~ ., data = training, trControl=control, method="svmLinear")
+#fit_svmr <- train(classe ~ ., data = training, trControl=control, method="svmRadial")
+#predict_svm = predict(fit_svm, testing)
+```
+
+Random Forests and the Support Vector Machine make the same *exact* predictions for each of the 20 test cases. There is 70\% agreement between the predictions of these models and those from Linear Discriminant Analysis. Linear Discriminant Analysis does not perform as well as the other models in cross-validated accuracy. Because I am using a voting mechanism to produce a final set of predictions, and because the predictions of the Random Forest and the Support Vector Machine are identical, the predictions of those two models also represent my final prediction.
+
+Because our test sample does not include the `classe` variable we cannot directly measure test accuracy. If we were simply selecting the best fitting model (in terms of cross-validated accuracy) we would likely be overestimating test accuracy (because the model with the highest cross-validated accuracy presumably also got "lucky". Here we are making predictions by selecting the class that receives the most votes from the three models. Given that that prediction will always correspond to the predictions of both the Random Forests and the Support Vector Machine (which are identical), I would estimate that the test accuracy would lay between the cross-validated accuracy of those two models.
+
+[^1]:
+Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6. 
